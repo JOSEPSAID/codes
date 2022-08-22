@@ -1,1 +1,2 @@
 # codes
+This repository contains all the codes used for my bachelor thesis. It includes Google Earth Engine Codes for CART, and NDWI for identifying riverbed sites
