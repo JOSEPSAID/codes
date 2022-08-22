@@ -1,0 +1,144 @@
+
+
+function mask2clouds (image) {
+  
+ var qa = image.select('QA60');
+ var cloudBitMask = 1 << 10;
+ var cirrusBitMask = 1<< 11;
+  
+var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+          .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+          
+  return image.updateMask(mask).divide(10000);
+};
+var image = ee.ImageCollection("LANDSAT/LC08/C02/T1_TOA")
+.filterDate('2020-01-01','2020-12-31')
+.filterBounds(roi)
+.sort('CLOUD_COVER')
+.first()
+.clip(roi);
+
+//define region of interest in your coding platform 
+var vizParams = {
+  bands: ['B5', 'B4', 'B3'],
+  min: 0,
+  max: 0.5,
+  gamma: [0.95, 1.1, 1]
+};
+
+  Map.addLayer(image, vizParams, 'False Color composite');
+  Map.centerObject(roi, 11);
+  
+var vizParams = { bands: ['B4', 'B3', 'B1'], min: 0, max: 0.4};
+Map.addLayer(image.clip(roi), vizParams, 'original_image');
+
+
+// Compute the Normalized Difference Vegetation Index (NDVI).
+var nir = image.select('B5');
+var red = image.select('B4');
+var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
+
+// Display the result.
+Map.centerObject(roi, 11);
+var ndviParams = {min: -1, max: 1, palette: ['blue', 'white', 'green']};
+Map.addLayer(ndvi, ndviParams, 'NDVI image');
+
+// Compute the Normalized Difference water Index (NDWI).
+var nir = image.select('B5');
+var green = image.select('B3');
+var ndwi = nir.subtract(green).divide(nir.add(green)).rename('NDWI');
+
+// Display the result.
+Map.centerObject(roi, 11);
+var ndwiParams = {min: -1, max: 1, palette: ['blue', 'white', 'green']};
+Map.addLayer(ndwi, ndwiParams, 'NDWI image');
+
+var ndwiMasked = ndwi.updateMask(ndwi.gte(0.4));
+Map.addLayer(ndwiMasked, ndwiParams,'NDWI masked');   
+
+// Create visualization layers.
+var imageRGB = image.visualize({bands: ['B5', 'B4', 'B3'], max: 0.5});
+var ndwiRGB = ndwiMasked.visualize({
+  min: 0.5,
+  max: 1,
+  palette: ['red', 'green', 'blue']
+});
+
+// UNSUPERVISED ALGORITHM
+  // creating cluster dataset
+  var bands = ['B4','B3','B2'];
+var input = image.select(bands);
+var training = image.sample({
+    region: roi,
+    scale: 30,
+    numPixels: 5000
+});  
+
+// numppixel means data point we gonna train
+// instantiate the cluster and train it
+var clusterer = ee.Clusterer.wekaKMeans(4).train(training);
+
+// cluster the input using the trained clusterer
+var result = image.cluster(clusterer);
+print("result", result.getInfo());
+    
+// display the clusterer with random color
+  Map.addLayer(result.clip(roi).randomVisualizer(), {}, 'Unsupervised classification');
+
+// create training data 
+var label = 'class';
+var bands = ['B2','B3','B4','B5','B6','B7'];
+var input = image.select(bands);
+
+var training = urban.merge(water).merge(forest).merge(barren);
+print(training);
+
+// overlay the points on image to get training
+var trainImage = input.sampleRegions({
+          collection: training,
+          properties: [label],
+          scale: 30,
+          });
+  print(trainImage);
+  
+var trainingData = trainImage.randomColumn();
+var trainSet = trainingData.filter(ee.Filter.lessThan('random',0.8));
+var testSet =  trainingData.filter(ee.Filter.greaterThanOrEquals('random',0.8));
+
+// Supervised classification
+var classifier = ee.Classifier.smileCart().train(trainSet,label,bands);
+
+// Classify the image
+var classified = input.classify(classifier);
+print(classified.getInfo());
+
+// define color pallete
+var landCoverPalette = [
+  '#333FFF', // water (0)
+  '#F9FF33' ,// urban(1)
+  '#33FF42', // forest(2)
+  '#33FFAF', // barren(3) 
+  ];
+
+Map.addLayer(classified, {palette: landCoverPalette, min:0, max: 4}, 'classification');
+
+// accuracy assesment 
+// classify the testSet and get confusion matrix
+var confusionMatrix = ee.ConfusionMatrix(testSet.classify(classifier)
+.errorMatrix({
+     actual: 'class',
+     predicted: 'classification',
+}));
+
+print('confusionMatrix:', confusionMatrix);
+print( 'Overall accuracy:', confusionMatrix.accuracy());
+
+
+// export the image to google drive
+Export.image.toDrive({
+     image: classified,
+     description: 'landsat20_classified_cart_new_2',
+     scale: 30,
+     region: image,
+     maxPixels: 1e13,
+});
